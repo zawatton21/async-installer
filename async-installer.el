@@ -1,28 +1,31 @@
-;;; async-installer.el --- Async package install/update from ELPA and GitHub -*- lexical-binding: t; -*-
+;;; async-installer.el --- Async package install/update from Git repos -*- lexical-binding: t; -*-
 
 ;; Author: Fujisawa Electric Management Office
 ;; URL: https://github.com/zawatton21/async-installer
-;; Version: 0.1.0
+;; Version: 0.3.0
 ;; Keywords: lisp, tools, convenience
 ;; Package-Requires: ((emacs "27.1") (async "1.9"))
 
 ;;; Commentary:
 ;;
 ;; async-installer provides non-blocking package installation and updates
-;; for Emacs, using background Emacs batch processes.  Packages can be
-;; installed and updated while you continue editing — no waiting, no
-;; restart required.
+;; for Emacs, using background processes.  Packages can be installed and
+;; updated while you continue editing — no waiting, no restart required.
 ;;
-;; Three installation backends:
+;; Two installation backends:
 ;;
-;; 1. ELPA/MELPA — `async-installer-install-packages' installs from
-;;    package archives with retry logic and concurrency control.
-;; 2. GitHub — `async-installer-github-install-all' clones repos with
-;;    commit/branch/tag pinning and optional pre-build commands.
-;; 3. Archive — `async-installer-archive-start' downloads and installs
-;;    tar/gz/zip archives.
+;; 1. Git — `async-installer-git-install-all-interactive' clones repos
+;;    from any Git host (GitHub, GitLab, Codeberg, self-hosted, etc.)
+;;    with commit/branch/tag pinning and optional pre-build commands.
+;;    After cloning, missing dependencies are automatically detected from
+;;    Package-Requires headers and reported.
+;; 2. Archive — `async-installer-archive-start' downloads and installs
+;;    tar/gz/zip archives from URLs.
 ;;
-;; Philosophy:
+;; Any Git repository URL works — GitHub, GitLab, Codeberg, Gitea,
+;; SourceHut, self-hosted instances, or any URL that `git clone' accepts.
+;;
+;; Philosophy — plain elisp over macro DSLs:
 ;;
 ;; This package is designed for users who manage packages with plain
 ;; `require' and elisp rather than macro-based package managers
@@ -38,151 +41,30 @@
 ;;
 ;; Usage:
 ;;
-;; ;; ELPA/MELPA packages
-;; (add-to-list 'async-installer-list 'magit)
-;; (add-to-list 'async-installer-list 'vertico)
-;; (async-installer-install-packages)
+;; ;; Git packages (with version pinning — any host works)
+;; (async-installer-git-add "https://github.com/org/repo.git"
+;;                          :commit "abc1234")
+;; (async-installer-git-add "https://gitlab.com/org/repo.git")
+;; (async-installer-git-add "https://codeberg.org/org/repo.git")
+;; (async-installer-git-install-all-interactive)
 ;;
-;; ;; GitHub packages (with version pinning)
-;; (async-installer-github-add "https://github.com/org/repo.git"
-;;                           :commit "abc1234")
-;; (async-installer-github-install-all-interactive)
-;;
-;; ;; Update all GitHub packages
-;; (async-installer-github-update-all-interactive)
+;; ;; Update all Git packages
+;; (async-installer-git-update-all-interactive)
 
 ;;; Code:
 
 (require 'cl-lib)
-(require 'package)
 (require 'subr-x)
 (require 'async)
 
 ;; ============================================================
-;; ELPA/MELPA async install
+;; Utilities
 ;; ============================================================
-
-(defvar async-installer-retry-count 15
-  "Number of retries for failed package installations.")
-
-(defvar async-installer-retry-table (make-hash-table :test 'equal)
-  "Hash table tracking retry counts per package.")
-
-(defvar async-installer-list '()
-  "List of package symbols to install from ELPA/MELPA.")
-
-(defvar async-installer-install-limit 50
-  "Maximum number of simultaneous installation processes.")
-
-(defvar async-installer-running-processes 0
-  "Current number of running installation processes.")
-
-(defvar async-installer-errors '()
-  "List of packages that failed to install after all retries.")
-
-(defvar async-installer-on-complete-hook nil
-  "Hook called after all ELPA/MELPA packages are installed.
-Each function receives no arguments.")
 
 (defun async-installer--emacs-binary ()
   "Return the path to the current Emacs binary."
   (concat (replace-regexp-in-string "\\\\" "/" invocation-directory)
           invocation-name))
-
-;;;###autoload
-(defun async-installer-refresh-cache ()
-  "Clear package cache and refresh contents asynchronously.
-After refresh, start installing packages from `async-installer-list'."
-  (interactive)
-  (setq package-gnupghome-dir nil)
-  (setq package-check-signature nil)
-  (let ((process (start-process
-                  "async-installer-refresh"
-                  "*Async Package Refresh*"
-                  (async-installer--emacs-binary)
-                  "--batch"
-                  "-l" "package"
-                  "--eval" "(setq package-check-signature nil)"
-                  "--eval" "(package-refresh-contents)")))
-    (set-process-sentinel
-     process
-     (lambda (proc _event)
-       (when (and (eq (process-status proc) 'exit)
-                  (zerop (process-exit-status proc)))
-         (message "[async-installer] Cache refresh completed.")
-         (async-installer--install-next))))))
-
-(defun async-installer--install-next ()
-  "Install the next package from the queue if concurrency allows."
-  (while (and async-installer-list
-              (< async-installer-running-processes async-installer-install-limit))
-    (let* ((package (pop async-installer-list))
-           (package-name (symbol-name package))
-           (process-name (format "async-install-%s" package-name))
-           (process-buffer (format "*%s*" process-name)))
-      (if (package-installed-p package)
-          (message "[async-installer] Already installed: %s" package-name)
-        (setq async-installer-running-processes (1+ async-installer-running-processes))
-        (message "[async-installer] Installing: %s..." package-name)
-        (let ((process (start-process
-                        process-name process-buffer
-                        (async-installer--emacs-binary)
-                        "--batch"
-                        "-l" "package"
-                        "--eval" "(setq package-check-signature nil)"
-                        "--eval" (format "(unless (package-installed-p '%s) (package-install '%s))"
-                                         package-name package-name)
-                        "--eval" "(package-initialize)")))
-          (set-process-sentinel
-           process
-           (lambda (p e)
-             (setq async-installer-running-processes
-                   (1- async-installer-running-processes))
-             (if (and (eq (process-status p) 'exit)
-                      (zerop (process-exit-status p)))
-                 (progn
-                   (message "[async-installer] Installed: %s" package-name)
-                   ;; Refresh package-alist and pin the version
-                   (package-initialize 'no-activate)
-                   (async-installer-pin-record (intern package-name)))
-               (message "[async-installer] Failed: %s — %s" package-name e)
-               (async-installer--handle-failure package-name))
-             (async-installer--install-next)
-             (when (and (null async-installer-list)
-                        (zerop async-installer-running-processes))
-               (async-installer--install-complete)))))))))
-
-(defun async-installer--handle-failure (pkg-name)
-  "Retry installation of PKG-NAME or record failure."
-  (let ((count (gethash pkg-name async-installer-retry-table 0)))
-    (if (< count async-installer-retry-count)
-        (progn
-          (puthash pkg-name (1+ count) async-installer-retry-table)
-          (message "[async-installer] Retry %d/%d: %s"
-                   (1+ count) async-installer-retry-count pkg-name)
-          (push (intern pkg-name) async-installer-list))
-      (message "[async-installer] Gave up on: %s" pkg-name)
-      (push pkg-name async-installer-errors)
-      (let ((buf (get-buffer (format "*async-install-%s*" pkg-name))))
-        (when buf (display-buffer buf))))))
-
-(defun async-installer--install-complete ()
-  "Report install results and run hooks."
-  (if async-installer-errors
-      (message "[async-installer] Done with errors: %s"
-               (string-join async-installer-errors ", "))
-    (message "[async-installer] All packages installed successfully!"))
-  (run-hooks 'async-installer-on-complete-hook))
-
-;;;###autoload
-(defun async-installer-install-packages ()
-  "Start async installation of all packages in `async-installer-list'."
-  (interactive)
-  (setq async-installer-running-processes 0)
-  (setq async-installer-errors '())
-  (clrhash async-installer-retry-table)
-  (async-installer-pin-load)
-  (async-installer-refresh-cache))
 
 ;; ============================================================
 ;; Archive async install (tar/gz/zip from URL)
@@ -341,13 +223,13 @@ After refresh, start installing packages from `async-installer-list'."
   (async-installer-archive--schedule-next))
 
 ;; ============================================================
-;; GitHub async install/update
+;; Git async install/update (GitHub, GitLab, Codeberg, etc.)
 ;; ============================================================
 
-(defvar async-installer-github-list '()
-  "List of GitHub packages to install.
+(defvar async-installer-git-list '()
+  "List of Git packages to install.
 Each entry is a plist with keys:
-  :repo      (required) GitHub repository URL
+  :repo      (required) Git repository URL (any host)
   :commit    Checkout target (SHA1)
   :branch    Branch name
   :tag       Tag name
@@ -355,34 +237,35 @@ Each entry is a plist with keys:
   :main      File to `load' after install
   :pre-build List of shell commands to run after checkout")
 
-(defvar async-installer-github-install-dir
+(defvar async-installer-git-install-dir
   (expand-file-name "external-packages" user-emacs-directory)
-  "Directory where GitHub packages are cloned.")
+  "Directory where Git packages are cloned.")
 
-(defvar async-installer-github-native-compile t
+(defvar async-installer-git-native-compile t
   "Non-nil means native-compile packages after install/update.")
 
 ;;;###autoload
-(defun async-installer-github-add (repo &rest options)
-  "Add a GitHub REPO with OPTIONS to the install list.
+(defun async-installer-git-add (repo &rest options)
+  "Add a Git REPO with OPTIONS to the install list.
+REPO can be any Git URL (GitHub, GitLab, Codeberg, self-hosted, etc.).
 OPTIONS can include :branch, :tag, :commit, :subdir, :main, :pre-build."
   (let ((package (plist-put options :repo repo)))
-    (setq async-installer-github-list
-          (append async-installer-github-list (list package)))))
+    (setq async-installer-git-list
+          (append async-installer-git-list (list package)))))
 
-(defun async-installer-github--ensure-dir ()
-  "Ensure `async-installer-github-install-dir' exists."
-  (unless (file-directory-p async-installer-github-install-dir)
-    (make-directory async-installer-github-install-dir t)))
+(defun async-installer-git--ensure-dir ()
+  "Ensure `async-installer-git-install-dir' exists."
+  (unless (file-directory-p async-installer-git-install-dir)
+    (make-directory async-installer-git-install-dir t)))
 
-(defun async-installer-github--native-compile (dir)
+(defun async-installer-git--native-compile (dir)
   "Native-compile DIR if available and enabled."
-  (when (and async-installer-github-native-compile
+  (when (and async-installer-git-native-compile
              (fboundp 'native-compile-async))
-    (message "[async-github] native-compile queued: %s" dir)
+    (message "[async-git] native-compile queued: %s" dir)
     (native-compile-async dir 2 t)))
 
-(defun async-installer-github--make-clone-script (pkg-dir repo-url checkout-target pre-build)
+(defun async-installer-git--make-clone-script (pkg-dir repo-url checkout-target pre-build)
   "Generate a shell/batch script to clone REPO-URL into PKG-DIR.
 Checkout CHECKOUT-TARGET and run PRE-BUILD commands if any."
   (let ((git-exe (executable-find "git")))
@@ -438,40 +321,40 @@ Checkout CHECKOUT-TARGET and run PRE-BUILD commands if any."
          pkg-dir git-exe-sh checkout-target
          post-lines)))))
 
-(defun async-installer-github--postprocess (package pkg-dir)
+(defun async-installer-git--postprocess (package pkg-dir)
   "Handle :subdir, :main, and native compilation for PACKAGE at PKG-DIR."
   (when (plist-get package :files)
-    (message "[async-github] WARNING: :files not supported (ignoring)"))
+    (message "[async-git] WARNING: :files not supported (ignoring)"))
   (let ((subdir (plist-get package :subdir))
         (main-file (plist-get package :main)))
     (if subdir
         (let ((subdir-full (expand-file-name subdir pkg-dir)))
           (if (file-directory-p subdir-full)
               (add-to-list 'load-path subdir-full)
-            (message "[async-github] WARNING: :subdir '%s' not found" subdir))
+            (message "[async-git] WARNING: :subdir '%s' not found" subdir))
           (when main-file
             (let ((main-path (expand-file-name main-file subdir-full)))
               (if (file-readable-p main-path)
                   (condition-case err (load main-path)
-                    (error (message "[async-github] WARNING: load failed: %s — %s"
+                    (error (message "[async-git] WARNING: load failed: %s — %s"
                                     main-file err)))
-                (message "[async-github] WARNING: main not found: %s" main-file)))))
+                (message "[async-git] WARNING: main not found: %s" main-file)))))
       (add-to-list 'load-path pkg-dir)
       (when main-file
         (let ((main-path (expand-file-name main-file pkg-dir)))
           (if (file-readable-p main-path)
               (condition-case err (load main-path)
-                (error (message "[async-github] WARNING: load failed: %s — %s"
+                (error (message "[async-git] WARNING: load failed: %s — %s"
                                 main-file err)))
-            (message "[async-github] WARNING: main not found: %s" main-file))))))
-  (async-installer-github--native-compile pkg-dir)
+            (message "[async-git] WARNING: main not found: %s" main-file))))))
+  (async-installer-git--native-compile pkg-dir)
   ;; Check for missing dependencies
   (let ((pkg-name (file-name-nondirectory (directory-file-name pkg-dir))))
-    (async-installer-github--check-deps pkg-dir pkg-name)))
+    (async-installer-git--check-deps pkg-dir pkg-name)))
 
-(defun async-installer-github--install-one (package callback)
+(defun async-installer-git--install-one (package callback)
   "Clone PACKAGE asynchronously, call CALLBACK with dir or nil."
-  (async-installer-github--ensure-dir)
+  (async-installer-git--ensure-dir)
   (let* ((repo-url (plist-get package :repo))
          (checkout-target (or (plist-get package :commit)
                               (plist-get package :branch)
@@ -480,15 +363,15 @@ Checkout CHECKOUT-TARGET and run PRE-BUILD commands if any."
          (pre-build (plist-get package :pre-build))
          (pkg-name (file-name-nondirectory
                     (string-remove-suffix ".git" repo-url)))
-         (pkg-dir (expand-file-name pkg-name async-installer-github-install-dir))
-         (script-str (async-installer-github--make-clone-script
+         (pkg-dir (expand-file-name pkg-name async-installer-git-install-dir))
+         (script-str (async-installer-git--make-clone-script
                       pkg-dir repo-url checkout-target pre-build)))
     (if (file-directory-p pkg-dir)
         (progn
           (let ((inhibit-message t))
-            (message "[async-github] Exists, skipping: %s" pkg-dir))
+            (message "[async-git] Exists, skipping: %s" pkg-dir))
           (funcall callback pkg-dir))
-      (message "[async-github] Cloning: %s" repo-url)
+      (message "[async-git] Cloning: %s" repo-url)
       (async-start
        `(lambda ()
           (require 'subr-x)
@@ -504,18 +387,18 @@ Checkout CHECKOUT-TARGET and run PRE-BUILD commands if any."
                  (concat "cmd /c \"" script-file "\" 2>&1")
                (concat "/bin/sh \"" script-file "\" 2>&1")))))
        (lambda (output)
-         (message "[async-github] Clone result for %s:\n%s" repo-url output)
+         (message "[async-git] Clone result for %s:\n%s" repo-url output)
          (if (file-directory-p pkg-dir)
              (progn
-               (async-installer-github--postprocess package pkg-dir)
+               (async-installer-git--postprocess package pkg-dir)
                (funcall callback pkg-dir))
-           (message "[async-github] Clone failed: %s" repo-url)
+           (message "[async-git] Clone failed: %s" repo-url)
            (funcall callback nil)))))))
 
-(defun async-installer-github--install-all (finish-func)
-  "Install all packages in `async-installer-github-list' sequentially.
+(defun async-installer-git--install-all (finish-func)
+  "Install all packages in `async-installer-git-list' sequentially.
 Call FINISH-FUNC with (success-count fail-count)."
-  (let ((packages (copy-sequence async-installer-github-list))
+  (let ((packages (copy-sequence async-installer-git-list))
         (success 0)
         (fail 0))
     (cl-labels
@@ -523,7 +406,7 @@ Call FINISH-FUNC with (success-count fail-count)."
            (if (null packages)
                (funcall finish-func success fail)
              (let ((pkg (pop packages)))
-               (async-installer-github--install-one
+               (async-installer-git--install-one
                 pkg
                 (lambda (dir-or-nil)
                   (if dir-or-nil
@@ -533,21 +416,21 @@ Call FINISH-FUNC with (success-count fail-count)."
       (step))))
 
 ;;;###autoload
-(defun async-installer-github-install-all-interactive ()
-  "Interactively install all GitHub packages."
+(defun async-installer-git-install-all-interactive ()
+  "Interactively install all Git packages."
   (interactive)
-  (async-installer-github--install-all
+  (async-installer-git--install-all
    (lambda (ok ng)
-     (message "[async-github] Done! success=%d, fail=%d" ok ng))))
+     (message "[async-git] Done! success=%d, fail=%d" ok ng))))
 
 ;;;###autoload
-(defun async-installer-github-install-all-and-exit ()
-  "Batch entry point: install all GitHub packages, then exit Emacs."
+(defun async-installer-git-install-all-and-exit ()
+  "Batch entry point: install all Git packages, then exit Emacs."
   (interactive)
   (let ((done nil) (fail-count 0))
-    (async-installer-github--install-all
+    (async-installer-git--install-all
      (lambda (ok ng)
-       (message "[async-github] Done! success=%d, fail=%d" ok ng)
+       (message "[async-git] Done! success=%d, fail=%d" ok ng)
        (setq done t fail-count ng)))
     (when noninteractive
       (while (not done)
@@ -557,7 +440,7 @@ Call FINISH-FUNC with (success-count fail-count)."
 
 ;; --- Update ---
 
-(defun async-installer-github--update-one (package callback)
+(defun async-installer-git--update-one (package callback)
   "Update PACKAGE if cached target differs from desired.
 Call CALLBACK with pkg-dir or nil."
   (let* ((repo-url (plist-get package :repo))
@@ -567,11 +450,11 @@ Call CALLBACK with pkg-dir or nil."
                          "main"))
          (pkg-name (file-name-nondirectory
                     (string-remove-suffix ".git" repo-url)))
-         (pkg-dir (expand-file-name pkg-name async-installer-github-install-dir))
+         (pkg-dir (expand-file-name pkg-name async-installer-git-install-dir))
          (cache-file (expand-file-name ".gitcommit" pkg-dir)))
     (if (not (file-directory-p pkg-dir))
         (progn
-          (message "[async-github] Not installed, skip update: %s" pkg-name)
+          (message "[async-git] Not installed, skip update: %s" pkg-name)
           (funcall callback nil))
       (let ((cached (if (file-exists-p cache-file)
                         (with-temp-buffer
@@ -580,9 +463,9 @@ Call CALLBACK with pkg-dir or nil."
                       "")))
         (if (string= cached update-tgt)
             (progn
-              (message "[async-github] Already at %s: %s" update-tgt pkg-name)
+              (message "[async-git] Already at %s: %s" update-tgt pkg-name)
               (funcall callback pkg-dir))
-          (message "[async-github] Updating %s: %s -> %s" pkg-name cached update-tgt)
+          (message "[async-git] Updating %s: %s -> %s" pkg-name cached update-tgt)
           (async-start
            (lambda ()
              (let ((default-directory pkg-dir))
@@ -593,23 +476,23 @@ Call CALLBACK with pkg-dir or nil."
              (if result
                  (progn
                    (with-temp-file cache-file (insert update-tgt))
-                   (message "[async-github] Updated: %s -> %s" pkg-name update-tgt)
-                   (async-installer-github--native-compile pkg-dir)
+                   (message "[async-git] Updated: %s -> %s" pkg-name update-tgt)
+                   (async-installer-git--native-compile pkg-dir)
                    (funcall callback pkg-dir))
-               (message "[async-github] Update failed: %s" pkg-name)
+               (message "[async-git] Update failed: %s" pkg-name)
                (funcall callback nil)))))))))
 
-(defun async-installer-github--update-all (finish-func)
-  "Update all packages in `async-installer-github-list'.
+(defun async-installer-git--update-all (finish-func)
+  "Update all packages in `async-installer-git-list'.
 Call FINISH-FUNC with (success-count fail-count)."
-  (let ((packages (copy-sequence async-installer-github-list))
+  (let ((packages (copy-sequence async-installer-git-list))
         (success 0) (fail 0))
     (cl-labels
         ((step ()
            (if (null packages)
                (funcall finish-func success fail)
              (let ((pkg (pop packages)))
-               (async-installer-github--update-one
+               (async-installer-git--update-one
                 pkg
                 (lambda (dir-or-nil)
                   (if dir-or-nil
@@ -619,21 +502,21 @@ Call FINISH-FUNC with (success-count fail-count)."
       (step))))
 
 ;;;###autoload
-(defun async-installer-github-update-all-interactive ()
-  "Interactively update all GitHub packages."
+(defun async-installer-git-update-all-interactive ()
+  "Interactively update all Git packages."
   (interactive)
-  (async-installer-github--update-all
+  (async-installer-git--update-all
    (lambda (ok ng)
-     (message "[async-github] Update done! success=%d, fail=%d" ok ng))))
+     (message "[async-git] Update done! success=%d, fail=%d" ok ng))))
 
 ;;;###autoload
-(defun async-installer-github-update-all-and-exit ()
-  "Batch entry point: update all GitHub packages, then exit Emacs."
+(defun async-installer-git-update-all-and-exit ()
+  "Batch entry point: update all Git packages, then exit Emacs."
   (interactive)
   (let ((done nil) (fail-count 0))
-    (async-installer-github--update-all
+    (async-installer-git--update-all
      (lambda (ok ng)
-       (message "[async-github] Update done! success=%d, fail=%d" ok ng)
+       (message "[async-git] Update done! success=%d, fail=%d" ok ng)
        (setq done t fail-count ng)))
     (when noninteractive
       (while (not done)
@@ -668,104 +551,10 @@ env SUDO_ASKPASS=\"$askpass_file\" sudo -A %s && rm -f \"$askpass_file\""
           cmd-list))
 
 ;; ============================================================
-;; MELPA version pinning
+;; Git dependency detection
 ;; ============================================================
 
-(defvar async-installer-pin-file
-  (expand-file-name "async-installer-pins.el" user-emacs-directory)
-  "File to store pinned package versions.
-Each entry is (PACKAGE-SYMBOL . \"VERSION-STRING\").")
-
-(defvar async-installer-pins nil
-  "Alist of pinned packages: ((PACKAGE . \"VERSION\") ...).")
-
-(defun async-installer-pin-load ()
-  "Load pinned versions from `async-installer-pin-file'."
-  (when (file-exists-p async-installer-pin-file)
-    (with-temp-buffer
-      (insert-file-contents async-installer-pin-file)
-      (setq async-installer-pins (read (current-buffer))))))
-
-(defun async-installer-pin-save ()
-  "Save pinned versions to `async-installer-pin-file'."
-  (with-temp-file async-installer-pin-file
-    (insert ";; -*- lexical-binding: t; -*-\n")
-    (insert ";; Auto-generated by async-installer. Do not edit.\n")
-    (pp async-installer-pins (current-buffer))))
-
-(defun async-installer-pin-record (package)
-  "Record the installed version of PACKAGE to the pin file."
-  (when (package-installed-p package)
-    (let* ((desc (cadr (assq package package-alist)))
-           (ver (when desc (package-version-join (package-desc-version desc)))))
-      (when ver
-        (setf (alist-get package async-installer-pins) ver)
-        (async-installer-pin-save)
-        (message "[async-installer] Pinned: %s @ %s" package ver)))))
-
-(defun async-installer-pin-check (package)
-  "Return t if PACKAGE is at its pinned version, nil if outdated or missing.
-Return \\='no-pin if no pin exists for PACKAGE."
-  (let ((pinned-ver (alist-get package async-installer-pins)))
-    (if (null pinned-ver)
-        'no-pin
-      (if (package-installed-p package)
-          (let* ((desc (cadr (assq package package-alist)))
-                 (cur-ver (when desc (package-version-join
-                                      (package-desc-version desc)))))
-            (string= cur-ver pinned-ver))
-        nil))))
-
-;;;###autoload
-(defun async-installer-pin-status ()
-  "Display a buffer showing all pinned packages and their status."
-  (interactive)
-  (async-installer-pin-load)
-  (with-current-buffer (get-buffer-create "*Async Installer Pins*")
-    (erase-buffer)
-    (insert "Pinned packages:\n\n")
-    (if (null async-installer-pins)
-        (insert "  (no pins recorded)\n")
-      (dolist (entry (sort (copy-sequence async-installer-pins)
-                           (lambda (a b) (string< (symbol-name (car a))
-                                                  (symbol-name (car b))))))
-        (let* ((pkg (car entry))
-               (pinned (cdr entry))
-               (status (async-installer-pin-check pkg))
-               (mark (cond ((eq status 'no-pin) "?")
-                           (status "=")
-                           (t "!"))))
-          (insert (format "  %s %-30s pinned: %s" mark pkg pinned))
-          (when (and (not (eq status 'no-pin)) (not status))
-            (let* ((desc (cadr (assq pkg package-alist)))
-                   (cur (when desc (package-version-join
-                                    (package-desc-version desc)))))
-              (insert (format "  current: %s" (or cur "not installed")))))
-          (insert "\n"))))
-    (insert "\n= pinned version matches  ! version mismatch  ? no pin\n")
-    (goto-char (point-min))
-    (display-buffer (current-buffer))))
-
-;;;###autoload
-(defun async-installer-pin-all-installed ()
-  "Pin all currently installed ELPA/MELPA packages at their current versions."
-  (interactive)
-  (async-installer-pin-load)
-  (let ((count 0))
-    (dolist (entry package-alist)
-      (let* ((pkg (car entry))
-             (desc (cadr entry))
-             (ver (package-version-join (package-desc-version desc))))
-        (setf (alist-get pkg async-installer-pins) ver)
-        (cl-incf count)))
-    (async-installer-pin-save)
-    (message "[async-installer] Pinned %d packages" count)))
-
-;; ============================================================
-;; GitHub dependency detection
-;; ============================================================
-
-(defun async-installer-github--parse-pkg-requires (pkg-dir)
+(defun async-installer-git--parse-pkg-requires (pkg-dir)
   "Parse Package-Requires from .el files in PKG-DIR.
 Return a list of (PACKAGE MIN-VERSION) pairs."
   (let ((requires nil))
@@ -781,10 +570,10 @@ Return a list of (PACKAGE MIN-VERSION) pairs."
               (error nil))))))
     requires))
 
-(defun async-installer-github--check-deps (pkg-dir pkg-name)
+(defun async-installer-git--check-deps (pkg-dir pkg-name)
   "Check dependencies for PKG-NAME installed at PKG-DIR.
 Display missing dependencies in a buffer if any are found."
-  (let* ((requires (async-installer-github--parse-pkg-requires pkg-dir))
+  (let* ((requires (async-installer-git--parse-pkg-requires pkg-dir))
          (missing nil))
     (dolist (req requires)
       (let ((pkg (if (listp req) (car req) req))
@@ -802,23 +591,33 @@ Display missing dependencies in a buffer if any are found."
             (insert (format "  - %s (>= %s)\n" (car dep) (cdr dep))))
           (insert "\n"))
         (display-buffer buf)
-        (message "[async-github] %s has %d missing dep(s) — see *Async Installer Dependencies*"
+        (message "[async-git] %s has %d missing dep(s) — see *Async Installer Dependencies*"
                  pkg-name (length missing))))))
 
 ;; ============================================================
 ;; Backward compatibility aliases
 ;; ============================================================
 
+;; async-installer-github-* → async-installer-git-* (v0.3.0 rename)
+(defalias 'async-installer-github-add #'async-installer-git-add)
+(defalias 'async-installer-github-install-all-interactive #'async-installer-git-install-all-interactive)
+(defalias 'async-installer-github-install-all-and-exit #'async-installer-git-install-all-and-exit)
+(defalias 'async-installer-github-update-all-interactive #'async-installer-git-update-all-interactive)
+(defalias 'async-installer-github-update-all-and-exit #'async-installer-git-update-all-and-exit)
+(defvaralias 'async-installer-github-list 'async-installer-git-list)
+(defvaralias 'async-installer-github-install-dir 'async-installer-git-install-dir)
+(defvaralias 'async-installer-github-native-compile 'async-installer-git-native-compile)
+
 ;; Old async-package-* names → new async-installer-* names
 (defalias 'async-package-refresh-cache #'async-installer-refresh-cache)
 (defalias 'async-package-install-packages #'async-installer-install-packages)
 (defalias 'async-package-archive-add #'async-installer-archive-add)
 (defalias 'async-package-archive-start #'async-installer-archive-start)
-(defalias 'async-package-github-add #'async-installer-github-add)
-(defalias 'async-package-github-install-all-interactive #'async-installer-github-install-all-interactive)
-(defalias 'async-package-github-install-all-and-exit #'async-installer-github-install-all-and-exit)
-(defalias 'async-package-github-update-all-interactive #'async-installer-github-update-all-interactive)
-(defalias 'async-package-github-update-all-and-exit #'async-installer-github-update-all-and-exit)
+(defalias 'async-package-github-add #'async-installer-git-add)
+(defalias 'async-package-github-install-all-interactive #'async-installer-git-install-all-interactive)
+(defalias 'async-package-github-install-all-and-exit #'async-installer-git-install-all-and-exit)
+(defalias 'async-package-github-update-all-interactive #'async-installer-git-update-all-interactive)
+(defalias 'async-package-github-update-all-and-exit #'async-installer-git-update-all-and-exit)
 (defalias 'async-package-build-sudo-command #'async-installer-build-sudo-command)
 (defalias 'async-package-build-sudo-commands #'async-installer-build-sudo-commands)
 
@@ -827,26 +626,26 @@ Display missing dependencies in a buffer if any are found."
 (defalias 'async-install-packages #'async-installer-install-packages)
 (defalias 'add-to-package-list #'async-installer-archive-add)
 (defalias 'async-archives-start #'async-installer-archive-start)
-(defalias 'add-to-github-package-list #'async-installer-github-add)
-(defalias 'ensure-external-packages-dir #'async-installer-github--ensure-dir)
-(defalias 'my-async-install-github-package #'async-installer-github--install-one)
-(defalias 'my-async-package-postprocess #'async-installer-github--postprocess)
-(defalias 'my-async-install-all-packages #'async-installer-github--install-all)
-(defalias 'my-async-install-all-packages-interactive #'async-installer-github-install-all-interactive)
-(defalias 'my-async-install-all-packages-and-exit #'async-installer-github-install-all-and-exit)
-(defalias 'my-async-update-github-package #'async-installer-github--update-one)
-(defalias 'my-async-update-all-github-packages #'async-installer-github--update-all)
-(defalias 'my-async-update-all-github-packages-interactive #'async-installer-github-update-all-interactive)
-(defalias 'my-async-update-all-github-packages-and-exit #'async-installer-github-update-all-and-exit)
-(defalias 'my-async--make-git-clone-script #'async-installer-github--make-clone-script)
+(defalias 'add-to-github-package-list #'async-installer-git-add)
+(defalias 'ensure-external-packages-dir #'async-installer-git--ensure-dir)
+(defalias 'my-async-install-github-package #'async-installer-git--install-one)
+(defalias 'my-async-package-postprocess #'async-installer-git--postprocess)
+(defalias 'my-async-install-all-packages #'async-installer-git--install-all)
+(defalias 'my-async-install-all-packages-interactive #'async-installer-git-install-all-interactive)
+(defalias 'my-async-install-all-packages-and-exit #'async-installer-git-install-all-and-exit)
+(defalias 'my-async-update-github-package #'async-installer-git--update-one)
+(defalias 'my-async-update-all-github-packages #'async-installer-git--update-all)
+(defalias 'my-async-update-all-github-packages-interactive #'async-installer-git-update-all-interactive)
+(defalias 'my-async-update-all-github-packages-and-exit #'async-installer-git-update-all-and-exit)
+(defalias 'my-async--make-git-clone-script #'async-installer-git--make-clone-script)
 (defalias 'build-sudo-command #'async-installer-build-sudo-command)
 (defalias 'build-sudo-commands-list #'async-installer-build-sudo-commands)
 
 ;; Keep old variable names working
-(defvaralias 'github-package-list 'async-installer-github-list)
+(defvaralias 'github-package-list 'async-installer-git-list)
 (defvaralias 'async-archives--list 'async-installer-archive-list)
 (defvaralias 'async-package-list 'async-installer-list)
-(defvaralias 'async-package-github-list 'async-installer-github-list)
+(defvaralias 'async-package-github-list 'async-installer-git-list)
 (defvaralias 'async-package-archive-list 'async-installer-archive-list)
 
 (provide 'async-installer)

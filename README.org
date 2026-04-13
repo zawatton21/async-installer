@@ -2,7 +2,7 @@
 #+author: Fujisawa Electric Management Office
 
 #+begin_quote
-Install and update GitHub packages while you keep editing. No restart needed.
+Install and update packages from any Git host while you keep editing. No restart needed.
 #+end_quote
 
 * Why async-installer?
@@ -14,22 +14,26 @@ async-installer runs every git clone, download, and byte-compile in a
 background process.  You can install 50+ packages and keep editing
 without interruption.
 
-** GitHub-first, commit-pinned
+** Any Git host, commit-pinned
 
-Every package is cloned from its GitHub repository with an explicit
+Every package is cloned from its Git repository with an explicit
 commit, branch, or tag.  This gives you full reproducibility without
 lock files — the same config always produces the same result.
 
-MELPA/ELPA packages are *not* handled via =package.el=.  Instead,
-clone the package's GitHub repository directly.  Almost all MELPA
-packages have a GitHub source, and pinning to a commit is strictly
-more reproducible than depending on a rolling archive.
+Works with any Git host:
+- GitHub
+- GitLab
+- Codeberg
+- Gitea
+- SourceHut
+- Self-hosted instances
+- Any URL that =git clone= accepts
 
 ** Dependency detection
 
-After cloning a GitHub package, async-installer automatically parses
-the =Package-Requires= header and reports any missing dependencies
-in the =*Async Installer Dependencies*= buffer.
+After cloning a package, async-installer automatically parses the
+=Package-Requires= header and reports any missing dependencies in the
+=*Async Installer Dependencies*= buffer.
 
 ** Plain elisp — no macro DSL required
 
@@ -67,7 +71,7 @@ plumbing in the background.
   :config (setq magit-save-repository-buffers 'dontask))
 
 ;; Plain elisp (async-installer):
-(async-installer-github-add
+(async-installer-git-add
  "https://github.com/magit/magit.git"
  :commit "abc1234" :subdir "lisp" :main "magit-autoloads.el")
 (with-eval-after-load 'magit
@@ -83,18 +87,18 @@ instantly.
 
 | Feature | Command |
 |---------+---------|
-| Install from GitHub (async, pinned) | =async-installer-github-install-all-interactive= |
-| Update GitHub packages | =async-installer-github-update-all-interactive= |
+| Install from Git (async, pinned) | =async-installer-git-install-all-interactive= |
+| Update Git packages | =async-installer-git-update-all-interactive= |
 | Install from archive URL | =async-installer-archive-start= |
-| Batch install + exit | =async-installer-github-install-all-and-exit= |
-| Batch update + exit | =async-installer-github-update-all-and-exit= |
-| Dependency detection | Automatic after GitHub clone |
+| Batch install + exit | =async-installer-git-install-all-and-exit= |
+| Batch update + exit | =async-installer-git-update-all-and-exit= |
+| Dependency detection | Automatic after clone |
 
 * Requirements
 
 - Emacs 27.1+
 - [[https://melpa.org/#/async][async.el]] (the only external dependency)
-- =git= in PATH (for GitHub backend)
+- =git= in PATH
 
 * Installation
 
@@ -126,15 +130,26 @@ git clone https://github.com/zawatton21/async-installer.git ~/.emacs.d/external-
 
 * Quick start
 
-** GitHub packages (with version pinning)
+** Git packages (with version pinning)
 
 #+begin_src emacs-lisp
-;; Add packages
-(async-installer-github-add
+;; From GitHub
+(async-installer-git-add
  "https://github.com/minad/vertico.git"
  :commit "abc1234def")
 
-(async-installer-github-add
+;; From GitLab
+(async-installer-git-add
+ "https://gitlab.com/org/repo.git"
+ :branch "main")
+
+;; From Codeberg
+(async-installer-git-add
+ "https://codeberg.org/org/repo.git"
+ :tag "v1.0")
+
+;; With subdirectory and pre-build commands
+(async-installer-git-add
  "https://github.com/org/repo.git"
  :branch "develop"
  :subdir "lisp"
@@ -142,10 +157,10 @@ git clone https://github.com/zawatton21/async-installer.git ~/.emacs.d/external-
  :pre-build '("make autoloads"))
 
 ;; Install all
-(async-installer-github-install-all-interactive)
+(async-installer-git-install-all-interactive)
 
 ;; Later, update all
-(async-installer-github-update-all-interactive)
+(async-installer-git-update-all-interactive)
 #+end_src
 
 ** Archive packages (tar/gz/zip)
@@ -160,13 +175,13 @@ For ELPA tar files or other archives:
 
 ** "But I want package X from MELPA"
 
-Find the package's GitHub repository (linked on the MELPA page) and
-use the GitHub backend instead:
+Find the package's Git repository (linked on the MELPA page) and use
+the Git backend instead:
 
 #+begin_src emacs-lisp
 ;; Instead of: (package-install 'diminish)
 ;; Do:
-(async-installer-github-add
+(async-installer-git-add
  "https://github.com/myrber/diminish.el.git"
  :commit "fbd5d846611bad828e336b25d2e131d1bc06b83d")
 #+end_src
@@ -177,22 +192,21 @@ This gives you commit-pinned, fully reproducible installation.
 
 #+begin_src sh
 emacs --batch -l ~/.emacs.d/init.el \
-  --eval "(async-installer-github-install-all-and-exit)"
+  --eval "(async-installer-git-install-all-and-exit)"
 #+end_src
 
 * Backward compatibility
 
 All old function and variable names are aliased via =defalias= /
-=defvaralias=:
+=defvaralias=.  Existing configs will continue to work without changes.
 
 | Old name | New name |
 |----------+----------|
-| =add-to-github-package-list= | =async-installer-github-add= |
-| =my-async-install-all-packages-interactive= | =async-installer-github-install-all-interactive= |
-| =my-async-update-all-github-packages-interactive= | =async-installer-github-update-all-interactive= |
-| =github-package-list= (var) | =async-installer-github-list= |
-
-Existing configs will continue to work without changes.
+| =async-installer-github-add= | =async-installer-git-add= |
+| =async-installer-github-install-all-interactive= | =async-installer-git-install-all-interactive= |
+| =async-installer-github-update-all-interactive= | =async-installer-git-update-all-interactive= |
+| =async-installer-github-list= (var) | =async-installer-git-list= |
+| =add-to-github-package-list= | =async-installer-git-add= |
 
 * License
 
