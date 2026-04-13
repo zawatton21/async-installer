@@ -1,0 +1,162 @@
+#+title: async-installer — Non-blocking package management for Emacs
+#+author: Fujisawa Electric Management Office
+
+#+begin_quote
+Install and update packages while you keep editing. No restart needed.
+#+end_quote
+
+* Why async-installer?
+
+** Live install & update
+
+Traditional package managers block Emacs during installation.
+async-installer runs every git clone, download, and byte-compile in a
+background Emacs batch process.  You can install 50+ packages and keep
+editing without interruption.
+
+** Plain elisp — no macro DSL required
+
+async-installer is built for users who configure Emacs with plain
+=require=, =setq=, and =add-hook= instead of macro-based package
+managers.
+
+Popular managers like =use-package=, =straight.el=, =elpaca=, and
+=leaf= wrap configuration in their own macro syntax.  This creates
+several problems:
+
+- *Learning overhead*: each macro system has its own keywords, timing
+  semantics (=:defer=, =:after=, =:demand=, =:ensure=, etc.), and
+  implicit behaviors that must be learned separately from Emacs Lisp
+  itself.
+- *Debugging difficulty*: when something goes wrong, you have to
+  understand what the macro expanded into, not just what you wrote.
+- *AI unfriendly*: LLMs can read and generate standard =(require
+  'foo)= / =(setq ...)= / =(add-hook ...)= far more reliably than
+  macro-specific syntax with implicit load-timing and side effects.
+  A macro DSL is essentially a second language that both the user and
+  the AI must learn on top of Emacs Lisp.
+
+async-installer takes a different approach: *plain elisp is the
+configuration language*.  You write normal =require=, =setq=,
+=add-hook= — and async-installer only handles the install/update
+plumbing in the background.
+
+#+begin_example
+;; Macro DSL (use-package):
+(use-package magit
+  :ensure t
+  :defer t
+  :bind ("C-x g" . magit-status)
+  :config (setq magit-save-repository-buffers 'dontask))
+
+;; Plain elisp (async-installer):
+(add-to-list 'async-installer-list 'magit)
+(with-eval-after-load 'magit
+  (setq magit-save-repository-buffers 'dontask))
+(global-set-key (kbd "C-x g") #'magit-status)
+#+end_example
+
+The plain elisp version is longer, but every line is standard Emacs
+Lisp.  Nothing is implicit.  Any Emacs user — or AI — can read it
+instantly.
+
+** Version pinning with git
+
+GitHub packages can be pinned to a specific commit, branch, or tag.
+Updates only happen when you change the target — full reproducibility
+without a lock file.
+
+* Features
+
+| Feature | Command |
+|---------+---------|
+| Install from ELPA/MELPA (async) | =async-installer-install-packages= |
+| Install from GitHub (async, pinned) | =async-installer-github-install-all-interactive= |
+| Update GitHub packages | =async-installer-github-update-all-interactive= |
+| Install from archive URL | =async-installer-archive-start= |
+| Batch install + exit | =async-installer-github-install-all-and-exit= |
+| Batch update + exit | =async-installer-github-update-all-and-exit= |
+
+* Requirements
+
+- Emacs 27.1+
+- [[https://melpa.org/#/async][async.el]] (the only external dependency)
+- =git= in PATH (for GitHub backend)
+
+* Installation
+
+#+begin_src emacs-lisp
+;; Clone to your load-path
+(add-to-list 'load-path "~/Projects/async-installer")
+(require 'async-installer)
+#+end_src
+
+* Quick start
+
+** ELPA/MELPA packages
+
+#+begin_src emacs-lisp
+;; Register packages
+(add-to-list 'async-installer-list 'magit)
+(add-to-list 'async-installer-list 'vertico)
+(add-to-list 'async-installer-list 'consult)
+
+;; Install all (non-blocking)
+(async-installer-install-packages)
+#+end_src
+
+** GitHub packages (with version pinning)
+
+#+begin_src emacs-lisp
+;; Add packages
+(async-installer-github-add
+ "https://github.com/minad/vertico.git"
+ :commit "abc1234def")
+
+(async-installer-github-add
+ "https://github.com/org/repo.git"
+ :branch "develop"
+ :subdir "lisp"
+ :main "repo.el"
+ :pre-build '("make autoloads"))
+
+;; Install all
+(async-installer-github-install-all-interactive)
+
+;; Later, update all
+(async-installer-github-update-all-interactive)
+#+end_src
+
+** Archive packages (tar/gz/zip)
+
+#+begin_src emacs-lisp
+(async-installer-archive-add
+ "https://elpa.gnu.org/packages/some-package-1.0.tar")
+(async-installer-archive-start)
+#+end_src
+
+* Batch mode (CI / fresh install)
+
+#+begin_src sh
+emacs --batch -l ~/.emacs.d/init.el \
+  --eval "(async-installer-github-install-all-and-exit)"
+#+end_src
+
+* Backward compatibility
+
+All old function and variable names are aliased via =defalias= /
+=defvaralias=:
+
+| Old name | New name |
+|----------+----------|
+| =add-to-github-package-list= | =async-installer-github-add= |
+| =my-async-install-all-packages-interactive= | =async-installer-github-install-all-interactive= |
+| =my-async-update-all-github-packages-interactive= | =async-installer-github-update-all-interactive= |
+| =github-package-list= (var) | =async-installer-github-list= |
+| =async-package-list= (var) | =async-installer-list= |
+
+Existing configs will continue to work without changes.
+
+* License
+
+GPL-3.0
