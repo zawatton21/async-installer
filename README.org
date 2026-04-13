@@ -5,6 +5,8 @@
 Install and update packages from any Git host while you keep editing. No restart needed.
 #+end_quote
 
+[[https://github.com/sponsors/zawatton21][https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?style=flat-square]]
+
 * Why async-installer?
 
 ** Live install & update
