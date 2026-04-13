@@ -102,27 +102,33 @@ instantly.
 
 * Installation
 
-** Manual (bootstrap)
-
-async-installer bootstraps itself — clone and load:
-
-#+begin_src bash
-git clone https://github.com/zawatton21/async-installer.git ~/.emacs.d/external-packages/async-installer
-#+end_src
+Paste this into your =init.el=.  On first launch, async-installer
+clones itself automatically — no manual =git clone= needed:
 
 #+begin_src emacs-lisp
-(add-to-list 'load-path "~/.emacs.d/external-packages/async-installer")
+;; --- async-installer bootstrap ---
+;; Self-installs on first run, then loads normally on subsequent starts.
+(let ((dir (expand-file-name "external-packages/async-installer" user-emacs-directory)))
+  (unless (file-exists-p (expand-file-name "async-installer.el" dir))
+    (make-directory dir t)
+    (message "Bootstrapping async-installer...")
+    (call-process "git" nil nil nil "clone"
+                  "https://github.com/zawatton21/async-installer.git" dir))
+  (add-to-list 'load-path dir))
 (require 'async-installer)
 #+end_src
 
-** straight.el
+That's it. After the first launch, packages are cloned into
+=~/.emacs.d/external-packages/=.
+
+** Alternative: straight.el
 
 #+begin_src emacs-lisp
 (straight-use-package
  '(async-installer :type git :host github :repo "zawatton21/async-installer"))
 #+end_src
 
-** elpaca
+** Alternative: elpaca
 
 #+begin_src emacs-lisp
 (elpaca (async-installer :host github :repo "zawatton21/async-installer"))
