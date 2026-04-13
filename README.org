@@ -2,7 +2,7 @@
 #+author: Fujisawa Electric Management Office
 
 #+begin_quote
-Install and update packages while you keep editing. No restart needed.
+Install and update GitHub packages while you keep editing. No restart needed.
 #+end_quote
 
 * Why async-installer?
@@ -11,8 +11,25 @@ Install and update packages while you keep editing. No restart needed.
 
 Traditional package managers block Emacs during installation.
 async-installer runs every git clone, download, and byte-compile in a
-background Emacs batch process.  You can install 50+ packages and keep
-editing without interruption.
+background process.  You can install 50+ packages and keep editing
+without interruption.
+
+** GitHub-first, commit-pinned
+
+Every package is cloned from its GitHub repository with an explicit
+commit, branch, or tag.  This gives you full reproducibility without
+lock files — the same config always produces the same result.
+
+MELPA/ELPA packages are *not* handled via =package.el=.  Instead,
+clone the package's GitHub repository directly.  Almost all MELPA
+packages have a GitHub source, and pinning to a commit is strictly
+more reproducible than depending on a rolling archive.
+
+** Dependency detection
+
+After cloning a GitHub package, async-installer automatically parses
+the =Package-Requires= header and reports any missing dependencies
+in the =*Async Installer Dependencies*= buffer.
 
 ** Plain elisp — no macro DSL required
 
@@ -50,7 +67,9 @@ plumbing in the background.
   :config (setq magit-save-repository-buffers 'dontask))
 
 ;; Plain elisp (async-installer):
-(add-to-list 'async-installer-list 'magit)
+(async-installer-github-add
+ "https://github.com/magit/magit.git"
+ :commit "abc1234" :subdir "lisp" :main "magit-autoloads.el")
 (with-eval-after-load 'magit
   (setq magit-save-repository-buffers 'dontask))
 (global-set-key (kbd "C-x g") #'magit-status)
@@ -60,22 +79,16 @@ The plain elisp version is longer, but every line is standard Emacs
 Lisp.  Nothing is implicit.  Any Emacs user — or AI — can read it
 instantly.
 
-** Version pinning with git
-
-GitHub packages can be pinned to a specific commit, branch, or tag.
-Updates only happen when you change the target — full reproducibility
-without a lock file.
-
 * Features
 
 | Feature | Command |
 |---------+---------|
-| Install from ELPA/MELPA (async) | =async-installer-install-packages= |
 | Install from GitHub (async, pinned) | =async-installer-github-install-all-interactive= |
 | Update GitHub packages | =async-installer-github-update-all-interactive= |
 | Install from archive URL | =async-installer-archive-start= |
 | Batch install + exit | =async-installer-github-install-all-and-exit= |
 | Batch update + exit | =async-installer-github-update-all-and-exit= |
+| Dependency detection | Automatic after GitHub clone |
 
 * Requirements
 
@@ -85,25 +98,33 @@ without a lock file.
 
 * Installation
 
+** Manual (bootstrap)
+
+async-installer bootstraps itself — clone and load:
+
+#+begin_src bash
+git clone https://github.com/zawatton21/async-installer.git ~/.emacs.d/external-packages/async-installer
+#+end_src
+
 #+begin_src emacs-lisp
-;; Clone to your load-path
-(add-to-list 'load-path "~/Projects/async-installer")
+(add-to-list 'load-path "~/.emacs.d/external-packages/async-installer")
 (require 'async-installer)
 #+end_src
 
-* Quick start
-
-** ELPA/MELPA packages
+** straight.el
 
 #+begin_src emacs-lisp
-;; Register packages
-(add-to-list 'async-installer-list 'magit)
-(add-to-list 'async-installer-list 'vertico)
-(add-to-list 'async-installer-list 'consult)
-
-;; Install all (non-blocking)
-(async-installer-install-packages)
+(straight-use-package
+ '(async-installer :type git :host github :repo "zawatton21/async-installer"))
 #+end_src
+
+** elpaca
+
+#+begin_src emacs-lisp
+(elpaca (async-installer :host github :repo "zawatton21/async-installer"))
+#+end_src
+
+* Quick start
 
 ** GitHub packages (with version pinning)
 
@@ -129,11 +150,28 @@ without a lock file.
 
 ** Archive packages (tar/gz/zip)
 
+For ELPA tar files or other archives:
+
 #+begin_src emacs-lisp
 (async-installer-archive-add
  "https://elpa.gnu.org/packages/some-package-1.0.tar")
 (async-installer-archive-start)
 #+end_src
+
+** "But I want package X from MELPA"
+
+Find the package's GitHub repository (linked on the MELPA page) and
+use the GitHub backend instead:
+
+#+begin_src emacs-lisp
+;; Instead of: (package-install 'diminish)
+;; Do:
+(async-installer-github-add
+ "https://github.com/myrber/diminish.el.git"
+ :commit "fbd5d846611bad828e336b25d2e131d1bc06b83d")
+#+end_src
+
+This gives you commit-pinned, fully reproducible installation.
 
 * Batch mode (CI / fresh install)
 
@@ -153,7 +191,6 @@ All old function and variable names are aliased via =defalias= /
 | =my-async-install-all-packages-interactive= | =async-installer-github-install-all-interactive= |
 | =my-async-update-all-github-packages-interactive= | =async-installer-github-update-all-interactive= |
 | =github-package-list= (var) | =async-installer-github-list= |
-| =async-package-list= (var) | =async-installer-list= |
 
 Existing configs will continue to work without changes.
 
