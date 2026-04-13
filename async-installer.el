@@ -594,59 +594,5 @@ Display missing dependencies in a buffer if any are found."
         (message "[async-git] %s has %d missing dep(s) — see *Async Installer Dependencies*"
                  pkg-name (length missing))))))
 
-;; ============================================================
-;; Backward compatibility aliases
-;; ============================================================
-
-;; async-installer-github-* → async-installer-git-* (v0.3.0 rename)
-(defalias 'async-installer-github-add #'async-installer-git-add)
-(defalias 'async-installer-github-install-all-interactive #'async-installer-git-install-all-interactive)
-(defalias 'async-installer-github-install-all-and-exit #'async-installer-git-install-all-and-exit)
-(defalias 'async-installer-github-update-all-interactive #'async-installer-git-update-all-interactive)
-(defalias 'async-installer-github-update-all-and-exit #'async-installer-git-update-all-and-exit)
-(defvaralias 'async-installer-github-list 'async-installer-git-list)
-(defvaralias 'async-installer-github-install-dir 'async-installer-git-install-dir)
-(defvaralias 'async-installer-github-native-compile 'async-installer-git-native-compile)
-
-;; Old async-package-* names → new async-installer-* names
-(defalias 'async-package-refresh-cache #'async-installer-refresh-cache)
-(defalias 'async-package-install-packages #'async-installer-install-packages)
-(defalias 'async-package-archive-add #'async-installer-archive-add)
-(defalias 'async-package-archive-start #'async-installer-archive-start)
-(defalias 'async-package-github-add #'async-installer-git-add)
-(defalias 'async-package-github-install-all-interactive #'async-installer-git-install-all-interactive)
-(defalias 'async-package-github-install-all-and-exit #'async-installer-git-install-all-and-exit)
-(defalias 'async-package-github-update-all-interactive #'async-installer-git-update-all-interactive)
-(defalias 'async-package-github-update-all-and-exit #'async-installer-git-update-all-and-exit)
-(defalias 'async-package-build-sudo-command #'async-installer-build-sudo-command)
-(defalias 'async-package-build-sudo-commands #'async-installer-build-sudo-commands)
-
-;; Old my-async-* / bare names → new async-installer-* names
-(defalias 'refresh-package-cache-async #'async-installer-refresh-cache)
-(defalias 'async-install-packages #'async-installer-install-packages)
-(defalias 'add-to-package-list #'async-installer-archive-add)
-(defalias 'async-archives-start #'async-installer-archive-start)
-(defalias 'add-to-github-package-list #'async-installer-git-add)
-(defalias 'ensure-external-packages-dir #'async-installer-git--ensure-dir)
-(defalias 'my-async-install-github-package #'async-installer-git--install-one)
-(defalias 'my-async-package-postprocess #'async-installer-git--postprocess)
-(defalias 'my-async-install-all-packages #'async-installer-git--install-all)
-(defalias 'my-async-install-all-packages-interactive #'async-installer-git-install-all-interactive)
-(defalias 'my-async-install-all-packages-and-exit #'async-installer-git-install-all-and-exit)
-(defalias 'my-async-update-github-package #'async-installer-git--update-one)
-(defalias 'my-async-update-all-github-packages #'async-installer-git--update-all)
-(defalias 'my-async-update-all-github-packages-interactive #'async-installer-git-update-all-interactive)
-(defalias 'my-async-update-all-github-packages-and-exit #'async-installer-git-update-all-and-exit)
-(defalias 'my-async--make-git-clone-script #'async-installer-git--make-clone-script)
-(defalias 'build-sudo-command #'async-installer-build-sudo-command)
-(defalias 'build-sudo-commands-list #'async-installer-build-sudo-commands)
-
-;; Keep old variable names working
-(defvaralias 'github-package-list 'async-installer-git-list)
-(defvaralias 'async-archives--list 'async-installer-archive-list)
-(defvaralias 'async-package-list 'async-installer-list)
-(defvaralias 'async-package-github-list 'async-installer-git-list)
-(defvaralias 'async-package-archive-list 'async-installer-archive-list)
-
 (provide 'async-installer)
 ;;; async-installer.el ends here

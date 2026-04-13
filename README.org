@@ -203,19 +203,6 @@ emacs --batch -l ~/.emacs.d/init.el \
   --eval "(async-installer-git-install-all-and-exit)"
 #+end_src
 
-* Backward compatibility
-
-All old function and variable names are aliased via =defalias= /
-=defvaralias=.  Existing configs will continue to work without changes.
-
-| Old name | New name |
-|----------+----------|
-| =async-installer-github-add= | =async-installer-git-add= |
-| =async-installer-github-install-all-interactive= | =async-installer-git-install-all-interactive= |
-| =async-installer-github-update-all-interactive= | =async-installer-git-update-all-interactive= |
-| =async-installer-github-list= (var) | =async-installer-git-list= |
-| =add-to-github-package-list= | =async-installer-git-add= |
-
 * License
 
 GPL-3.0
