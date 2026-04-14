@@ -2,7 +2,7 @@
 
 ;; Author: Fujisawa Electric Management Office
 ;; URL: https://github.com/zawatton21/async-installer
-;; Version: 0.3.0
+;; Version: 0.4.0
 ;; Keywords: lisp, tools, convenience
 ;; Package-Requires: ((emacs "27.1") (async "1.9"))
 
@@ -248,8 +248,16 @@ Each entry is a plist with keys:
 (defun async-installer-git-add (repo &rest options)
   "Add a Git REPO with OPTIONS to the install list.
 REPO can be any Git URL (GitHub, GitLab, Codeberg, self-hosted, etc.).
-OPTIONS can include :branch, :tag, :commit, :subdir, :main, :pre-build."
+OPTIONS can include :branch, :tag, :commit, :subdir, :main, :pre-build.
+
+This call is idempotent: if REPO is already registered, the existing
+entry is replaced (not duplicated).  Re-loading the file that contains
+`async-installer-git-add' calls — by tangle, file-notify, or
+`async-installer-reload' — never accumulates duplicates."
   (let ((package (plist-put options :repo repo)))
+    (setq async-installer-git-list
+          (cl-remove-if (lambda (p) (equal (plist-get p :repo) repo))
+                        async-installer-git-list))
     (setq async-installer-git-list
           (append async-installer-git-list (list package)))))
 
@@ -593,6 +601,134 @@ Display missing dependencies in a buffer if any are found."
         (display-buffer buf)
         (message "[async-git] %s has %d missing dep(s) — see *Async Installer Dependencies*"
                  pkg-name (length missing))))))
+
+;; ============================================================
+;; Live reload (re-evaluate package lists without restarting)
+;; ============================================================
+
+(defvar async-installer-reload-files nil
+  "List of .el file paths that define the desired package set.
+Each file typically contains `async-installer-git-add' and/or
+`async-installer-archive-add' calls.  `async-installer-reload' clears
+the in-memory lists and reloads every file in this list, so additions,
+edits, and removals all take effect without restarting Emacs.")
+
+(defvar async-installer--watch-descriptors nil
+  "Internal: file-notify descriptors for `async-installer-auto-reload-mode'.")
+
+(defvar async-installer--auto-reload-timer nil
+  "Internal: debounce timer for `async-installer-auto-reload-mode'.")
+
+(defvar async-installer-auto-reload-debounce 0.3
+  "Seconds to wait after a file change before reloading.
+file-notify can fire several events for a single save; debouncing
+collapses them into one reload.")
+
+;;;###autoload
+(defun async-installer-git-clear-list ()
+  "Clear `async-installer-git-list'."
+  (interactive)
+  (setq async-installer-git-list nil))
+
+;;;###autoload
+(defun async-installer-archive-clear-list ()
+  "Clear `async-installer-archive-list'."
+  (interactive)
+  (setq async-installer-archive-list nil))
+
+;;;###autoload
+(defun async-installer-reload ()
+  "Clear both package lists, then reload `async-installer-reload-files'.
+After this completes, `async-installer-git-list' and
+`async-installer-archive-list' reflect exactly the current contents of
+those files — additions, edits, and removals all take effect without
+restarting Emacs."
+  (interactive)
+  (async-installer-git-clear-list)
+  (async-installer-archive-clear-list)
+  (dolist (f async-installer-reload-files)
+    (let ((path (expand-file-name f)))
+      (if (file-exists-p path)
+          (load-file path)
+        (message "[async-installer] reload-files entry not found: %s" path))))
+  (when (called-interactively-p 'interactive)
+    (message "[async-installer] reload done: git=%d, archive=%d"
+             (length async-installer-git-list)
+             (length async-installer-archive-list))))
+
+(defun async-installer--reload-after-tangle (&rest _)
+  "Advice on `org-babel-tangle' that reloads package lists."
+  (async-installer-reload))
+
+;;;###autoload
+(define-minor-mode async-installer-reload-on-tangle-mode
+  "Reload package lists automatically after `org-babel-tangle'.
+When enabled, every successful `org-babel-tangle' call triggers
+`async-installer-reload', so newly tangled package definitions take
+effect immediately without restarting Emacs.
+
+Files reloaded are those listed in `async-installer-reload-files'."
+  :global t
+  :group 'async-installer
+  (if async-installer-reload-on-tangle-mode
+      (advice-add 'org-babel-tangle :after
+                  #'async-installer--reload-after-tangle)
+    (advice-remove 'org-babel-tangle
+                   #'async-installer--reload-after-tangle)))
+
+(defun async-installer--auto-reload-callback (event)
+  "file-notify callback for `async-installer-auto-reload-mode'.
+EVENT is the file-notify event triple.  Schedules a debounced reload
+so that several rapid events (e.g. changed + attribute-changed during
+a single save) collapse into one `async-installer-reload' call."
+  (let ((action (nth 1 event)))
+    (when (memq action '(changed created renamed))
+      (when async-installer--auto-reload-timer
+        (cancel-timer async-installer--auto-reload-timer))
+      (setq async-installer--auto-reload-timer
+            (run-with-timer
+             async-installer-auto-reload-debounce nil
+             (lambda ()
+               (setq async-installer--auto-reload-timer nil)
+               (async-installer-reload)))))))
+
+(defun async-installer--auto-reload-stop-watches ()
+  "Remove file-notify watches created by `async-installer-auto-reload-mode'."
+  (dolist (desc async-installer--watch-descriptors)
+    (ignore-errors (file-notify-rm-watch desc)))
+  (setq async-installer--watch-descriptors nil)
+  (when async-installer--auto-reload-timer
+    (cancel-timer async-installer--auto-reload-timer)
+    (setq async-installer--auto-reload-timer nil)))
+
+(defun async-installer--auto-reload-start-watches ()
+  "Set up file-notify watches for `async-installer-reload-files' entries."
+  (require 'filenotify)
+  (async-installer--auto-reload-stop-watches)
+  (dolist (f async-installer-reload-files)
+    (let ((path (expand-file-name f)))
+      (if (file-exists-p path)
+          (push (file-notify-add-watch
+                 path '(change) #'async-installer--auto-reload-callback)
+                async-installer--watch-descriptors)
+        (message "[async-installer] auto-reload skipped (not found): %s"
+                 path)))))
+
+;;;###autoload
+(define-minor-mode async-installer-auto-reload-mode
+  "Watch `async-installer-reload-files' and reload them on change.
+When enabled, file-notify watches are placed on every file in
+`async-installer-reload-files'.  Saving any of those files triggers
+`async-installer-reload' (debounced), so edits take effect immediately
+without restarting Emacs.
+
+If you change `async-installer-reload-files' itself, toggle this mode
+off and on to refresh the watch list."
+  :global t
+  :group 'async-installer
+  (if async-installer-auto-reload-mode
+      (async-installer--auto-reload-start-watches)
+    (async-installer--auto-reload-stop-watches)))
 
 (provide 'async-installer)
 ;;; async-installer.el ends here

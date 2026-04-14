@@ -95,6 +95,8 @@ instantly.
 | Batch install + exit | =async-installer-git-install-all-and-exit= |
 | Batch update + exit | =async-installer-git-update-all-and-exit= |
 | Dependency detection | Automatic after clone |
+| Live reload (no restart) | =async-installer-reload= / =-on-tangle-mode= / =-auto-reload-mode= |
+| Idempotent =git-add= | Re-loading package definitions never duplicates entries |
 
 * Requirements
 
@@ -195,6 +197,106 @@ the Git backend instead:
 #+end_src
 
 This gives you commit-pinned, fully reproducible installation.
+
+* Live reload — apply package changes without restarting Emacs
+
+When you add, edit, or remove a package definition, you usually want
+the in-memory registry to reflect that change immediately — without
+restarting Emacs.  async-installer offers three composable mechanisms:
+
+1. =async-installer-reload= — an interactive command you call manually.
+2. =async-installer-reload-on-tangle-mode= — for users who manage their
+   config in =init.org= and run =org-babel-tangle=.
+3. =async-installer-auto-reload-mode= — a file-notify watcher for users
+   who edit a plain =.el= package list directly.
+
+All three rely on a small but important property: =async-installer-git-add=
+is *idempotent* — calling it twice with the same =:repo= replaces the
+existing entry instead of appending a duplicate.  This means reloading
+your package-list file by any mechanism is always safe.
+
+** Common setup
+
+Tell async-installer which file(s) define your package set:
+
+#+begin_src emacs-lisp
+(setq async-installer-reload-files
+      '("~/.emacs.d/package-list.el"))
+#+end_src
+
+This list can contain one or more =.el= files; each is expected to
+contain =async-installer-git-add= and/or =async-installer-archive-add=
+calls.
+
+** =M-x async-installer-reload= — manual reload
+
+Clears the in-memory git and archive lists, then loads every file in
+=async-installer-reload-files=.  Additions, edits, and *removals* are
+all reflected after this command runs.  Suitable for any workflow.
+
+** Workflow A — direct =.el= editing (most users)
+
+You keep your package definitions in a plain Emacs Lisp file and edit
+it directly.  Enable file-notify auto-reload and saving the file
+triggers reload automatically:
+
+#+begin_src emacs-lisp
+;; ~/.emacs.d/init.el
+(setq async-installer-reload-files
+      '("~/.emacs.d/package-list.el"))
+
+(async-installer-auto-reload-mode 1)
+#+end_src
+
+If you change =async-installer-reload-files= itself, toggle the mode
+off and on to refresh the watch list.
+
+** Workflow B — =init.org= + =org-babel-tangle=
+
+You manage =init.el= as a tangled product of =init.org=.  Enable the
+tangle hook and every successful tangle re-evaluates your package
+definitions:
+
+#+begin_src emacs-lisp
+;; somewhere in your init.org or init.el
+(setq async-installer-reload-files
+      '("~/.emacs.d/custom-lisp/package-lists.el"))
+
+(async-installer-reload-on-tangle-mode 1)
+#+end_src
+
+Your =init.org= may have a section like:
+
+#+begin_example
+,#+begin_src emacs-lisp :tangle ~/.emacs.d/custom-lisp/package-lists.el
+(async-installer-git-add "https://github.com/magit/magit.git"
+                         :commit "abc1234")
+(async-installer-git-add "https://github.com/minad/vertico.git"
+                         :commit "def5678")
+,#+end_src
+#+end_example
+
+After =C-c C-v t= (tangle), the new entries are immediately available
+to =async-installer-git-install-all-interactive=.
+
+** Workflow C — =org-babel-load-file=
+
+Some users keep their entire =init.el= as a 3-line shim that simply
+loads =init.org= via =org-babel-load-file= (which tangles, then loads
+the result):
+
+#+begin_src emacs-lisp
+;; ~/.emacs.d/init.el
+(require 'org)
+(org-babel-load-file (expand-file-name "init.org" user-emacs-directory))
+#+end_src
+
+Because =org-babel-load-file= already loads the tangled file every
+startup, you do *not* need =async-installer-reload-on-tangle-mode= for
+the initial install path.  Idempotent =git-add= guarantees that
+re-running =org-babel-load-file= during a session does not duplicate
+entries.  If you want explicit re-evaluation after a runtime tangle,
+use =M-x async-installer-reload= or one of the modes above.
 
 * Batch mode (CI / fresh install)
 
