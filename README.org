@@ -1,6 +1,8 @@
 #+title: async-installer — Non-blocking package management for Emacs
 #+author: Fujisawa Electric Management Office
 
+*Languages:* English / [[file:README.ja.org][日本語]]
+
 #+begin_quote
 Install and update packages from any Git host while you keep editing. No restart needed.
 #+end_quote

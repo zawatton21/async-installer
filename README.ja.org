@@ -1,0 +1,307 @@
+#+title: async-installer — Emacs 用ノンブロッキングパッケージ管理
+#+author: 藤澤電気管理事務所
+
+*言語:* [[file:README.org][English]] / 日本語
+
+#+begin_quote
+どの Git ホストからでも、編集を続けながらパッケージをインストール・更新できる。再起動不要。
+#+end_quote
+
+#+html: <a href="https://github.com/sponsors/zawatton21"><img src="https://img.shields.io/badge/Sponsor_%E2%9D%A4_Support_this_project-pink?style=for-the-badge" alt="Sponsor"></a>
+
+* なぜ async-installer なのか？
+
+** ライブインストール & アップデート
+
+従来のパッケージマネージャーは、インストール中に Emacs をブロックします。
+async-installer はすべての git clone・ダウンロード・バイトコンパイルを
+バックグラウンドプロセスで実行します。50 本以上のパッケージをインストールしながら、
+中断なしに編集を続けられます。
+
+** あらゆる Git ホスト、コミット固定
+
+すべてのパッケージは、明示的なコミット・ブランチ・タグを指定して
+Git リポジトリからクローンされます。ロックファイルなしに完全な再現性が得られます
+— 同じ設定からは常に同じ結果が生まれます。
+
+対応 Git ホスト:
+- GitHub
+- GitLab
+- Codeberg
+- Gitea
+- SourceHut
+- セルフホストインスタンス
+- =git clone= が受け付ける任意の URL
+
+** 依存関係の自動検出
+
+パッケージをクローンした後、async-installer は自動的に
+=Package-Requires= ヘッダを解析し、不足している依存関係を
+=*Async Installer Dependencies*= バッファに報告します。
+
+** 素の Elisp — マクロ DSL 不要
+
+async-installer は、=use-package= や =straight.el= のようなマクロベースの
+パッケージマネージャーではなく、素の =require=、=setq=、=add-hook= で
+Emacs を設定するユーザーのために作られています。
+
+=use-package=、=straight.el=、=elpaca=、=leaf= などの人気マネージャーは、
+設定をそれぞれ固有のマクロ構文で包みます。これにはいくつかの問題があります:
+
+- *学習コスト*: 各マクロシステムは固有のキーワード、タイミングセマンティクス
+  (=:defer=、=:after=、=:demand=、=:ensure= など)、暗黙の挙動を持ち、
+  Emacs Lisp そのものとは別に習得しなければならない。
+- *デバッグの困難さ*: 何かがうまくいかないとき、書いたコードではなく、
+  マクロが展開した結果を理解しなければならない。
+- *AI 非親和性*: LLM は、暗黙のロードタイミングや副作用を持つ
+  マクロ固有の構文よりも、標準的な =(require 'foo)= / =(setq ...)= /
+  =(add-hook ...)= の方がはるかに確実に読み取り・生成できる。
+  マクロ DSL は事実上、ユーザーと AI の両方が Emacs Lisp の上に
+  別途習得しなければならない第二の言語だ。
+
+async-installer は別のアプローチをとります: *素の Elisp を設定言語とする*。
+通常の =require=、=setq=、=add-hook= を書けばよく、
+async-installer はインストール・更新の配管だけをバックグラウンドで担います。
+
+#+begin_example
+;; マクロ DSL (use-package):
+(use-package magit
+  :ensure t
+  :defer t
+  :bind ("C-x g" . magit-status)
+  :config (setq magit-save-repository-buffers 'dontask))
+
+;; 素の Elisp (async-installer):
+(async-installer-git-add
+ "https://github.com/magit/magit.git"
+ :commit "abc1234" :subdir "lisp" :main "magit-autoloads.el")
+(with-eval-after-load 'magit
+  (setq magit-save-repository-buffers 'dontask))
+(global-set-key (kbd "C-x g") #'magit-status)
+#+end_example
+
+素の Elisp 版は行数が多くなりますが、すべての行が標準的な Emacs Lisp です。
+暗黙の挙動は何もありません。どの Emacs ユーザーにとっても — AI にとっても —
+即座に読み解けます。
+
+* 機能
+
+| 機能                             | コマンド |
+|----------------------------------+---------|
+| Git からインストール (非同期・固定) | =async-installer-git-install-all-interactive= |
+| Git パッケージを更新             | =async-installer-git-update-all-interactive= |
+| アーカイブ URL からインストール   | =async-installer-archive-start= |
+| 一括インストール + 終了          | =async-installer-git-install-all-and-exit= |
+| 一括更新 + 終了                  | =async-installer-git-update-all-and-exit= |
+| 依存関係の自動検出               | クローン後に自動実行 |
+| ライブリロード (再起動不要)      | =async-installer-reload= / =-on-tangle-mode= / =-auto-reload-mode= |
+| 冪等な =git-add=                   | パッケージ定義を再読み込みしても重複エントリを追加しない |
+
+* 動作要件
+
+- Emacs 27.1 以上
+- [[https://melpa.org/#/async][async.el]] (唯一の外部依存)
+- PATH に =git= が存在すること
+
+* インストール
+
+以下を =init.el= に貼り付けてください。初回起動時に async-installer が
+自動でクローンされます — 手動の =git clone= は不要です:
+
+#+begin_src emacs-lisp
+;; --- async-installer ブートストラップ ---
+;; 初回実行時に自動インストール。以降は通常のロード。
+(let ((dir (expand-file-name "external-packages/async-installer" user-emacs-directory)))
+  (unless (file-exists-p (expand-file-name "async-installer.el" dir))
+    (make-directory dir t)
+    (message "Bootstrapping async-installer...")
+    (call-process "git" nil nil nil "clone"
+                  "https://github.com/zawatton21/async-installer.git" dir))
+  (add-to-list 'load-path dir))
+(require 'async-installer)
+#+end_src
+
+以上です。初回起動後、パッケージは =~/.emacs.d/external-packages/= にクローンされます。
+
+** 代替: straight.el
+
+#+begin_src emacs-lisp
+(straight-use-package
+ '(async-installer :type git :host github :repo "zawatton21/async-installer"))
+#+end_src
+
+** 代替: elpaca
+
+#+begin_src emacs-lisp
+(elpaca (async-installer :host github :repo "zawatton21/async-installer"))
+#+end_src
+
+* クイックスタート
+
+** Git パッケージ (バージョン固定)
+
+#+begin_src emacs-lisp
+;; GitHub から
+(async-installer-git-add
+ "https://github.com/minad/vertico.git"
+ :commit "abc1234def")
+
+;; GitLab から
+(async-installer-git-add
+ "https://gitlab.com/org/repo.git"
+ :branch "main")
+
+;; Codeberg から
+(async-installer-git-add
+ "https://codeberg.org/org/repo.git"
+ :tag "v1.0")
+
+;; サブディレクトリ指定とビルド前コマンド
+(async-installer-git-add
+ "https://github.com/org/repo.git"
+ :branch "develop"
+ :subdir "lisp"
+ :main "repo.el"
+ :pre-build '("make autoloads"))
+
+;; すべてインストール
+(async-installer-git-install-all-interactive)
+
+;; 後でまとめて更新
+(async-installer-git-update-all-interactive)
+#+end_src
+
+** アーカイブパッケージ (tar/gz/zip)
+
+ELPA の tar ファイルなどアーカイブ形式の場合:
+
+#+begin_src emacs-lisp
+(async-installer-archive-add
+ "https://elpa.gnu.org/packages/some-package-1.0.tar")
+(async-installer-archive-start)
+#+end_src
+
+** 「MELPA にあるパッケージ X が使いたい」
+
+MELPA のページからパッケージの Git リポジトリ URL を探し、
+Git バックエンドで指定してください:
+
+#+begin_src emacs-lisp
+;; (package-install 'diminish) の代わりに:
+(async-installer-git-add
+ "https://github.com/myrber/diminish.el.git"
+ :commit "fbd5d846611bad828e336b25d2e131d1bc06b83d")
+#+end_src
+
+コミット固定による完全に再現可能なインストールが得られます。
+
+* ライブリロード — Emacs を再起動せずにパッケージ変更を反映
+
+パッケージ定義を追加・編集・削除したとき、通常はインメモリのレジストリに
+その変更を即座に反映させたいはずです — Emacs を再起動せずに。
+async-installer は 3 つの組み合わせ可能な仕組みを提供します:
+
+1. =async-installer-reload= — 手動で呼び出すインタラクティブコマンド。
+2. =async-installer-reload-on-tangle-mode= — =init.org= を管理し
+   =org-babel-tangle= を使うユーザー向け。
+3. =async-installer-auto-reload-mode= — 素の =.el= パッケージリストを
+   直接編集するユーザー向けのファイル変更監視。
+
+3 つすべてが、ひとつの重要な性質に依存しています: =async-installer-git-add= は
+*冪等* です — 同じ =:repo= で 2 回呼んでも、既存のエントリを置き換えるだけで
+重複を追加しません。つまり、どの方法でパッケージリストファイルをリロードしても
+常に安全です。
+
+** 共通設定
+
+どのファイルがパッケージセットを定義しているか async-installer に伝えます:
+
+#+begin_src emacs-lisp
+(setq async-installer-reload-files
+      '("~/.emacs.d/package-list.el"))
+#+end_src
+
+このリストには 1 つ以上の =.el= ファイルを含められます。各ファイルには
+=async-installer-git-add= や =async-installer-archive-add= の呼び出しが
+含まれていることが想定されています。
+
+** =M-x async-installer-reload= — 手動リロード
+
+インメモリの git リストとアーカイブリストをクリアしてから、
+=async-installer-reload-files= 内の全ファイルを読み込みます。
+追加・編集・*削除* のすべてがこのコマンド実行後に反映されます。
+あらゆるワークフローに適用できます。
+
+** ワークフロー A — =.el= ファイルを直接編集 (多くのユーザー向け)
+
+パッケージ定義を素の Emacs Lisp ファイルに書いて直接編集します。
+ファイル変更監視の自動リロードを有効にすると、ファイルを保存するだけで
+リロードが自動実行されます:
+
+#+begin_src emacs-lisp
+;; ~/.emacs.d/init.el
+(setq async-installer-reload-files
+      '("~/.emacs.d/package-list.el"))
+
+(async-installer-auto-reload-mode 1)
+#+end_src
+
+=async-installer-reload-files= 自体を変更した場合は、
+モードをオフ・オンして監視リストを更新してください。
+
+** ワークフロー B — =init.org= + =org-babel-tangle=
+
+=init.el= を =init.org= のタングル成果物として管理しています。
+タングルフックを有効にすると、タングルが成功するたびに
+パッケージ定義が再評価されます:
+
+#+begin_src emacs-lisp
+;; init.org または init.el のどこかに
+(setq async-installer-reload-files
+      '("~/.emacs.d/custom-lisp/package-lists.el"))
+
+(async-installer-reload-on-tangle-mode 1)
+#+end_src
+
+=init.org= には次のようなセクションがあるかもしれません:
+
+#+begin_example
+,#+begin_src emacs-lisp :tangle ~/.emacs.d/custom-lisp/package-lists.el
+(async-installer-git-add "https://github.com/magit/magit.git"
+                         :commit "abc1234")
+(async-installer-git-add "https://github.com/minad/vertico.git"
+                         :commit "def5678")
+,#+end_src
+#+end_example
+
+=C-c C-v t= (タングル) の後、新しいエントリが即座に
+=async-installer-git-install-all-interactive= で利用可能になります。
+
+** ワークフロー C — =org-babel-load-file=
+
+=init.el= を 3 行のシムに留め、=org-babel-load-file= 経由で
+=init.org= を読み込む (タングルしてから結果をロードする) ユーザーもいます:
+
+#+begin_src emacs-lisp
+;; ~/.emacs.d/init.el
+(require 'org)
+(org-babel-load-file (expand-file-name "init.org" user-emacs-directory))
+#+end_src
+
+=org-babel-load-file= は起動のたびにタングル済みファイルをロードするため、
+初回インストールパスでは =async-installer-reload-on-tangle-mode= は
+*不要* です。冪等な =git-add= により、セッション中に =org-babel-load-file=
+を再実行しても重複エントリは生まれません。ランタイム中のタングル後に
+明示的な再評価が必要な場合は、=M-x async-installer-reload= か
+上記のいずれかのモードを使用してください。
+
+* バッチモード (CI / クリーンインストール)
+
+#+begin_src sh
+emacs --batch -l ~/.emacs.d/init.el \
+  --eval "(async-installer-git-install-all-and-exit)"
+#+end_src
+
+* ライセンス
+
+GPL-3.0
