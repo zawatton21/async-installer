@@ -1,7 +1,7 @@
 ;;; async-installer.el --- Async package install/update from Git repos -*- lexical-binding: t; -*-
 
 ;; Author: Fujisawa Electric Management Office
-;; URL: https://github.com/zawatton21/async-installer
+;; URL: https://github.com/zawatton/async-installer
 ;; Version: 0.4.0
 ;; Keywords: lisp, tools, convenience
 ;; Package-Requires: ((emacs "27.1") (async "1.9"))

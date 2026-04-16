@@ -7,7 +7,7 @@
 Install and update packages from any Git host while you keep editing. No restart needed.
 #+end_quote
 
-#+html: <a href="https://github.com/sponsors/zawatton21"><img src="https://img.shields.io/badge/Sponsor_%E2%9D%A4_Support_this_project-pink?style=for-the-badge" alt="Sponsor"></a>
+#+html: <a href="https://github.com/sponsors/zawatton"><img src="https://img.shields.io/badge/Sponsor_%E2%9D%A4_Support_this_project-pink?style=for-the-badge" alt="Sponsor"></a>
 
 * Why async-installer?
 
@@ -119,7 +119,7 @@ clones itself automatically — no manual =git clone= needed:
     (make-directory dir t)
     (message "Bootstrapping async-installer...")
     (call-process "git" nil nil nil "clone"
-                  "https://github.com/zawatton21/async-installer.git" dir))
+                  "https://github.com/zawatton/async-installer.git" dir))
   (add-to-list 'load-path dir))
 (require 'async-installer)
 #+end_src
@@ -131,13 +131,13 @@ That's it. After the first launch, packages are cloned into
 
 #+begin_src emacs-lisp
 (straight-use-package
- '(async-installer :type git :host github :repo "zawatton21/async-installer"))
+ '(async-installer :type git :host github :repo "zawatton/async-installer"))
 #+end_src
 
 ** Alternative: elpaca
 
 #+begin_src emacs-lisp
-(elpaca (async-installer :host github :repo "zawatton21/async-installer"))
+(elpaca (async-installer :host github :repo "zawatton/async-installer"))
 #+end_src
 
 * Quick start
